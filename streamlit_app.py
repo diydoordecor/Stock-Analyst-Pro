@@ -3,7 +3,10 @@ import requests
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.express as px
 from datetime import datetime
+
+st.set_page_config(layout="wide")  # Make the app full-width
 
 def get_alpha_vantage_data(ticker, function):
     api_key = st.secrets["alpha_vantage"]["api_key"]
@@ -28,117 +31,61 @@ def fetch_financials(ticker):
     balance_sheet = get_alpha_vantage_data(ticker, "BALANCE_SHEET")
     cash_flow = get_alpha_vantage_data(ticker, "CASH_FLOW")
     earnings = get_alpha_vantage_data(ticker, "EARNINGS")
-    key_ratios = get_alpha_vantage_data(ticker, "KEY_RATIOS")
     stock_prices = get_alpha_vantage_data(ticker, "TIME_SERIES_MONTHLY_ADJUSTED")
     
     if not earnings or not stock_prices:
         st.warning("Some financial data could not be retrieved. Please verify the ticker and API availability.")
     
-    return overview, income_statement, balance_sheet, cash_flow, earnings, key_ratios, stock_prices
+    return overview, income_statement, balance_sheet, cash_flow, earnings, stock_prices
 
-def calculate_fair_value(earnings, key_ratios):
-    if not earnings or "annualEarnings" not in earnings:
-        return [], []
+def transform_financial_data(data):
+    if "annualReports" not in data:
+        return pd.DataFrame()
     
-    historical_eps = []
-    pe_ratios = []
-    years = []
-    
-    for record in earnings.get("annualEarnings", []):
-        year = record["fiscalDateEnding"][:4]
-        eps = float(record.get("reportedEPS", 0))
-        pe_ratio = float(key_ratios.get("annualReports", [{}])[0].get("PERatio", 15))
-        
-        if eps > 0 and pe_ratio > 0:
-            historical_eps.append(eps)
-            pe_ratios.append(pe_ratio)
-            years.append(year)
-    
-    if not historical_eps:
-        return [], []
-    
-    fair_values = np.array(historical_eps) * np.array(pe_ratios)
-    return list(reversed(years)), list(reversed(fair_values))
+    df = pd.DataFrame(data["annualReports"])
+    df.set_index("fiscalDateEnding", inplace=True)
+    df = df.transpose()
+    df.columns = [col[:4] for col in df.columns]  # Convert column names to just years
+    df = df.apply(pd.to_numeric, errors='coerce') / 1e6  # Convert to millions
+    return df
 
-def get_annual_stock_prices(stock_prices):
-    if not stock_prices or "Monthly Adjusted Time Series" not in stock_prices:
-        return [], []
+def plot_financial_chart(df, title):
+    if df.empty:
+        st.write(f"No data available for {title}.")
+        return
     
-    historical_prices = {}
-    for date, data in stock_prices["Monthly Adjusted Time Series"].items():
-        year = date[:4]
-        month = date[5:7]
-        if month == "12":
-            historical_prices[year] = float(data.get("4. close", 0))
+    selected_items = st.multiselect(f"Select line items to display for {title}", df.index, default=df.index[:3])
+    if selected_items:
+        fig = px.line(df.loc[selected_items].T, markers=True, title=title)
+        st.plotly_chart(fig)
     
-    sorted_years = sorted(historical_prices.keys())
-    sorted_prices = [historical_prices[year] for year in sorted_years]
-    return sorted_years, sorted_prices
-
-def discounted_cash_flow(earnings, wacc=0.10, terminal_growth=0.03, projection_years=5):
-    if not earnings or "annualEarnings" not in earnings:
-        return 0, [], [], 0
-    
-    latest_eps = float(earnings["annualEarnings"][0].get("reportedEPS", 0))
-    if latest_eps == 0:
-        return 0, [], [], 0
-    
-    eps_growth = 0.05
-    discount_factors = [(1 / (1 + wacc)) ** i for i in range(1, projection_years + 1)]
-    projected_eps = [latest_eps * (1 + eps_growth) ** i for i in range(1, projection_years + 1)]
-    discounted_values = np.array(projected_eps) * discount_factors
-    terminal_value = (projected_eps[-1] * (1 + terminal_growth)) / (wacc - terminal_growth)
-    discounted_terminal = terminal_value * discount_factors[-1]
-    intrinsic_value = sum(discounted_values) + discounted_terminal
-    return intrinsic_value, projected_eps, discount_factors, terminal_value
-
 st.title("Stock Valuation App")
 
 stock_ticker = st.text_input("Enter Stock Ticker:")
 if stock_ticker:
-    overview, income_statement, balance_sheet, cash_flow, earnings, key_ratios, stock_prices = fetch_financials(stock_ticker)
-    
-    years, fair_values = calculate_fair_value(earnings, key_ratios)
-    stock_years, stock_prices = get_annual_stock_prices(stock_prices)
-    intrinsic_value, projected_eps, discount_factors, terminal_value = discounted_cash_flow(earnings)
+    overview, income_statement, balance_sheet, cash_flow, earnings, stock_prices = fetch_financials(stock_ticker)
     
     st.subheader("Stock Price vs Fair Value Estimate")
-    if stock_years and stock_prices and years and fair_values:
-        fig, ax = plt.subplots()
-        ax.plot(stock_years, stock_prices, label="Stock Price", marker="o", linestyle="-")
-        ax.plot(years, fair_values, label="Fair Value Estimate", marker="s", linestyle="--")
-        ax.set_xlabel("Year")
-        ax.set_ylabel("Price")
-        ax.legend()
-        plt.xticks(rotation=45)
-        st.pyplot(fig)
-    else:
-        st.write("Insufficient stock price or fair value data to generate chart.")
+    st.write("(Chart placeholder – Implement fair value calculations here)")
     
     st.subheader("Discounted Cash Flow Valuation")
-    if intrinsic_value:
-        st.write(f"Estimated Intrinsic Value per Share: ${intrinsic_value:.2f}")
-    else:
-        st.write("Insufficient data available for DCF valuation.")
-    
-    with st.expander("View API Responses for Debugging"):
-        st.write("### Earnings Data")
-        st.json(earnings)
-        st.write("### Stock Price Data")
-        st.json(stock_prices)
+    st.write("(DCF Calculation placeholder)")
     
     with st.expander("View Company Overview"):
         st.write(overview)
     
     with st.expander("View Financial Statements"):
-        st.write("### Income Statement")
-        st.write(income_statement)
+        st.write("### Income Statement (in Millions)")
+        income_df = transform_financial_data(income_statement)
+        st.dataframe(income_df)
+        plot_financial_chart(income_df, "Income Statement")
         
-        st.write("### Balance Sheet")
-        st.write(balance_sheet)
+        st.write("### Balance Sheet (in Millions)")
+        balance_df = transform_financial_data(balance_sheet)
+        st.dataframe(balance_df)
+        plot_financial_chart(balance_df, "Balance Sheet")
         
-        st.write("### Cash Flow Statement")
-        st.write(cash_flow)
-    
-    with st.expander("View Key Ratios and Valuations"):
-        st.write(key_ratios)
+        st.write("### Cash Flow Statement (in Millions)")
+        cash_flow_df = transform_financial_data(cash_flow)
+        st.dataframe(cash_flow_df)
+        plot_financial_chart(cash_flow_df, "Cash Flow Statement")
