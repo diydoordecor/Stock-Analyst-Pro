@@ -71,7 +71,7 @@ def get_company_growth_initiatives_openai(ticker):
                 {"role": "system", "content": "You are a helpful financial analyst."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=300,
+            max_tokens=1500,
             temperature=0.5
         )
         return response.choices[0].message.content.strip()
